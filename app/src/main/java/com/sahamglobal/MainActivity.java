@@ -2,10 +2,15 @@ package com.sahamglobal;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -14,309 +19,436 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.CookieManager;
-import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
-import android.webkit.WebChromeClient;
-import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final String IDX_URL = "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi";
     private static final int REQ_STORAGE = 102;
 
-    private WebView webView;
-    private ProgressBar progressBar;
-    private TextView statusText;
-    private Button refreshButton;
+    private WebView hiddenWebView;
+    private TextView statusTextView;
+    private ProgressBar loadingBar;
+    private Button btnRefresh;
+    private Button btnSearch;
+    private Button btnDialogMenu;
+    private ListView announcementListView;
 
+    private final List<AnnouncementItem> allItems = new ArrayList<>();
+    private final List<AnnouncementItem> displayItems = new ArrayList<>();
+    private ArrayAdapter<String> listAdapter;
+    private final List<String> listTitles = new ArrayList<>();
+
+    private String filterQuery = "";
     private String pendingDownloadUrl = "";
-    private String pendingContentDisposition = "";
-    private String pendingMimeType = "";
+    private String pendingDownloadName = "";
+
+    public static class AnnouncementItem {
+        String title;
+        String date;
+        String fileName;
+        String url;
+        String code;
+
+        AnnouncementItem(String title, String date, String fileName, String url) {
+            this.title = title;
+            this.date = date;
+            this.fileName = fileName;
+            this.url = url;
+            this.code = extractStockCode(title);
+        }
+
+        private String extractStockCode(String t) {
+            if (t == null) return "";
+            int start = t.lastIndexOf('[');
+            int end = t.lastIndexOf(']');
+            if (start != -1 && end != -1 && end > start) {
+                return t.substring(start + 1, end).trim();
+            }
+            return "";
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Tata letak utama antarmuka
+        // Tata letak utama native Android murni (Sangat ramah pembaca layar)
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(16, 16, 16, 16);
 
-        // Baris tombol kontrol atas yang ramah pembaca layar
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setPadding(16, 12, 16, 12);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        // Baris status & indikator
+        LinearLayout statusRow = new LinearLayout(this);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+        statusRow.setPadding(0, 0, 0, 8);
 
-        refreshButton = new Button(this);
-        refreshButton.setText("Segarkan Halaman");
-        refreshButton.setContentDescription("Tombol, Segarkan halaman keterbukaan informasi saham");
-        refreshButton.setOnClickListener(v -> refreshPage());
+        loadingBar = new ProgressBar(this);
+        loadingBar.setLayoutParams(new LinearLayout.LayoutParams(48, 48));
+        statusRow.addView(loadingBar);
 
-        statusText = new TextView(this);
-        statusText.setText("Siap memuat data");
-        statusText.setPadding(16, 0, 0, 0);
-        statusText.setTextSize(14);
+        statusTextView = new TextView(this);
+        statusTextView.setText("Menghubungkan ke server IDX...");
+        statusTextView.setTextSize(14);
+        statusTextView.setPadding(16, 0, 0, 0);
+        statusRow.addView(statusTextView);
 
-        topBar.addView(refreshButton);
-        topBar.addView(statusText);
-        root.addView(topBar);
+        root.addView(statusRow);
 
-        // Indikator proses pemuatan halaman
-        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setMax(100);
-        progressBar.setVisibility(View.GONE);
-        root.addView(progressBar);
+        // Baris tombol aksi cepat
+        LinearLayout buttonRow = new LinearLayout(this);
+        buttonRow.setOrientation(LinearLayout.HORIZONTAL);
+        buttonRow.setPadding(0, 8, 0, 12);
 
-        // WebView penampil keterbukaan informasi
-        webView = new WebView(this);
-        LinearLayout.LayoutParams webParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
-        webView.setLayoutParams(webParams);
-        root.addView(webView);
+        btnRefresh = new Button(this);
+        btnRefresh.setText("SEGARKAN");
+        btnRefresh.setContentDescription("Tombol, Segarkan pengumuman saham");
+        btnRefresh.setOnClickListener(v -> refreshData());
 
-        setContentView(root);
+        btnSearch = new Button(this);
+        btnSearch.setText("CARI KODE");
+        btnSearch.setContentDescription("Tombol, Cari atau filter kode saham");
+        btnSearch.setOnClickListener(v -> showSearchDialog());
 
-        configureWebView();
-        loadIdxPage();
-    }
+        btnDialogMenu = new Button(this);
+        btnDialogMenu.setText("MENU DIALOG");
+        btnDialogMenu.setContentDescription("Tombol, Buka daftar dalam menu dialog");
+        btnDialogMenu.setOnClickListener(v -> showAnnouncementDialogMenu());
 
-    private void configureWebView() {
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setLoadsImagesAutomatically(true);
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setSupportZoom(true);
-        settings.setBuiltInZoomControls(true);
-        settings.setDisplayZoomControls(false);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+        buttonRow.addView(btnRefresh, btnParams);
+        buttonRow.addView(btnSearch, btnParams);
+        buttonRow.addView(btnDialogMenu, btnParams);
 
-        // Muat data langsung tanpa cache agar selalu segar
-        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        root.addView(buttonRow);
 
-        // 1. Penanganan unduh otomatis saat tombol/lampiran PDF ditekan
-        webView.setDownloadListener(new DownloadListener() {
-            @Override
-            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-                checkPermissionAndDownload(url, contentDisposition, mimetype);
+        // Daftar tampilan pengumuman (Native ListView)
+        announcementListView = new ListView(this);
+        announcementListView.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+
+        listAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, listTitles);
+        announcementListView.setAdapter(listAdapter);
+
+        announcementListView.setOnItemClickListener((parent, view, position, id) -> {
+            if (position >= 0 && position < displayItems.size()) {
+                showDetailActionDialog(displayItems.get(position));
             }
         });
 
-        webView.setWebViewClient(new WebViewClient() {
+        root.addView(announcementListView);
+
+        // WebView tersembunyi (Hanya sebagai mesin pengambil data di latar belakang)
+        hiddenWebView = new WebView(this);
+        hiddenWebView.setVisibility(View.GONE);
+        root.addView(hiddenWebView);
+
+        setContentView(root);
+
+        initHiddenWebView();
+        refreshData();
+    }
+
+    private void initHiddenWebView() {
+        WebSettings s = hiddenWebView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setDatabaseEnabled(true);
+        s.setLoadsImagesAutomatically(false); // Hemat kuota & sangat cepat
+        s.setBlockNetworkImage(true);
+        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+
+        hiddenWebView.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void kirimDataPengumuman(String json) {
+                runOnUiThread(() -> prosesHasilEkstraksi(json));
+            }
+        }, "AndroidBridge");
+
+        hiddenWebView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
-                progressBar.setVisibility(View.VISIBLE);
-                statusText.setText("Memuat data saham terbaru...");
+                loadingBar.setVisibility(View.VISIBLE);
+                statusTextView.setText("Sedang memuat data dari IDX...");
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                progressBar.setVisibility(View.GONE);
-                statusText.setText("Halaman berhasil diperbarui");
-
-                // Injeksi otomatis: pilih 'Saham' dan rapikan antarmuka untuk pembaca layar
-                terapkanOptimasiAksesibilitasDanPilihSaham(view);
-            }
-
-            // 2. Cegat tautan PDF dan dokumen agar langsung mengunduh dan tidak macet
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                if (Build.VERSION.SDK_INT >= 24) {
-                    String url = request.getUrl().toString();
-                    if (isDownloadableFile(url)) {
-                        checkPermissionAndDownload(url, "", "application/pdf");
-                        return true;
-                    }
-                    view.loadUrl(url);
-                }
-                return false;
-            }
-
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                if (isDownloadableFile(url)) {
-                    checkPermissionAndDownload(url, "", "application/pdf");
-                    return true;
-                }
-                return false;
-            }
-        });
-
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onProgressChanged(WebView view, int newProgress) {
-                progressBar.setProgress(newProgress);
-                if (newProgress == 100) {
-                    progressBar.setVisibility(View.GONE);
-                }
+                statusTextView.setText("Menganalisis pengumuman saham...");
+                injeksiEkstraktorPengumuman(view);
             }
         });
     }
 
-    /**
-     * Skrip JavaScript untuk:
-     * 1. Menghilangkan elemen visual pengganggu (header, breadcrumb, tombol WA melayang).
-     * 2. Otomatis membuka filter jenis dan memilih 'Saham'.
-     */
-    private void terapkanOptimasiAksesibilitasDanPilihSaham(WebView view) {
+    private void injeksiEkstraktorPengumuman(WebView view) {
         String js = "javascript:(function() {" +
-                "  /* 1. Pasang aturan CSS agar elemen pengganggu langsung lenyap permanen */" +
-                "  var css = 'header, footer, nav, .navbar, .header-wrapper, .banner, ' +" +
-                "            '.breadcrumb, ol.breadcrumb, ul.breadcrumb, [aria-label=\"breadcrumb\"], ' +" +
-                "            '[class*=\"floating\"], [class*=\"whatsapp\"], [class*=\"chat\"], ' +" +
-                "            'button[class*=\"chat\"], iframe[src*=\"whatsapp\"], .v-tour, .help-widget ' +" +
-                "            '{ display: none !important; }';" +
-                "  var style = document.createElement('style');" +
-                "  style.type = 'text/css';" +
-                "  style.appendChild(document.createTextNode(css));" +
-                "  document.head.appendChild(style);" +
-                "" +
-                "  var telahDipilih = false;" +
-                "  var hitungBuka = 0;" +
-                "" +
-                "  function bersihkanTeksBreadcrumb() {" +
-                "    document.querySelectorAll('div, p, span').forEach(function(el) {" +
-                "      if (el.children.length <= 2 && el.innerText &&" +
-                "          el.innerText.indexOf('Perusahaan Tercatat') !== -1 &&" +
-                "          el.innerText.indexOf('Keterbukaan Informasi') !== -1 &&" +
-                "          el.tagName !== 'H1' && el.tagName !== 'H2') {" +
-                "        if (el.innerText.indexOf('>') !== -1 || el.innerText.indexOf('/') !== -1) {" +
-                "          el.style.setProperty('display', 'none', 'important');" +
-                "        }" +
-                "      }" +
-                "    });" +
+                "  /* 1. Otomatis pilih opsi 'Saham' jika belum */" +
+                "  var pemicu = document.querySelectorAll('button, div, span, input, a');" +
+                "  for (var k = 0; k < pemicu.length; k++) {" +
+                "    var txt = (pemicu[k].innerText || pemicu[k].value || '').trim();" +
+                "    if (txt === 'Jenis - Semua') {" +
+                "      var btn = pemicu[k].closest('button, [role=\"button\"], .multiselect, .v-select') || pemicu[k];" +
+                "      try { btn.click(); } catch(e){}" +
+                "      break;" +
+                "    }" +
+                "  }" +
+                "  var opsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
+                "  for (var m = 0; m < opsi.length; m++) {" +
+                "    if ((opsi[m].innerText || opsi[m].textContent || '').trim() === 'Saham') {" +
+                "      try { opsi[m].click(); } catch(e){}" +
+                "      break;" +
+                "    }" +
                 "  }" +
                 "" +
-                "  function triggerKlik(el) {" +
-                "    if (!el) return;" +
-                "    ['mouseenter', 'mousedown', 'mouseup', 'click'].forEach(function(evt) {" +
-                "      try {" +
-                "        var e = new MouseEvent(evt, { bubbles: true, cancelable: true, view: window });" +
-                "        el.dispatchEvent(e);" +
-                "      } catch(err) {}" +
-                "    });" +
-                "    try { if (typeof el.click === 'function') el.click(); } catch(err) {}" +
-                "  }" +
-                "" +
-                "  function jalankanPilihanSaham() {" +
-                "    if (telahDipilih) return;" +
-                "" +
-                "    /* A. Periksa tag select bawaan */" +
-                "    document.querySelectorAll('select').forEach(function(sel) {" +
-                "      for (var k = 0; k < sel.options.length; k++) {" +
-                "        if (sel.options[k].text.trim().toLowerCase() === 'saham') {" +
-                "          if (sel.selectedIndex !== k) {" +
-                "            sel.selectedIndex = k;" +
-                "            sel.dispatchEvent(new Event('change', { bubbles: true }));" +
+                "  /* 2. Ekstraksi daftar pengumuman saham */" +
+                "  function ambilDaftar() {" +
+                "    var hasil = [];" +
+                "    var pdfLinks = document.querySelectorAll('a[href*=\".pdf\"], a[href*=\"lamp\"]');" +
+                "    var seen = {};" +
+                "    pdfLinks.forEach(function(a) {" +
+                "      var href = a.href;" +
+                "      if (seen[href]) return;" +
+                "      seen[href] = true;" +
+                "      var namaFile = (a.innerText || a.textContent || '').trim();" +
+                "      var container = a.parentElement;" +
+                "      var tgl = '';" +
+                "      var jdl = '';" +
+                "      for (var d = 0; d < 8 && container && container !== document.body; d++) {" +
+                "        var raw = container.innerText || '';" +
+                "        var m = raw.match(/\\d{1,2}\\s+[A-Za-z]+\\s+\\d{4}(\\s+\\d{1,2}:\\d{2}(:\\d{2})?)?/);" +
+                "        if (m) {" +
+                "          tgl = m[0];" +
+                "          var baris = raw.split('\\n');" +
+                "          for (var i = 0; i < baris.length; i++) {" +
+                "            var b = baris[i].trim();" +
+                "            if (b.length > 5 && b !== tgl && b.indexOf(namaFile) === -1 && b.indexOf('.pdf') === -1) {" +
+                "              jdl = b;" +
+                "              break;" +
+                "            }" +
                 "          }" +
-                "          telahDipilih = true;" +
-                "          return;" +
-                "        }" +
-                "      }" +
-                "    });" +
-                "    if (telahDipilih) return;" +
-                "" +
-                "    /* B. Cek apakah menu dropdown sedang terbuka dan menampilkan opsi 'Saham' */" +
-                "    var opsiSaham = null;" +
-                "    var kandidat = document.querySelectorAll('li, div[role=\"option\"], a, span, button, p');" +
-                "    for (var j = 0; j < kandidat.length; j++) {" +
-                "      var item = kandidat[j];" +
-                "      var isi = (item.innerText || item.textContent || '').trim();" +
-                "      if (isi === 'Saham') {" +
-                "        if (item.tagName === 'LI' ||" +
-                "            item.getAttribute('role') === 'option' ||" +
-                "            item.closest('ul, .dropdown-menu, .multiselect__content, .v-select__content, [class*=\"dropdown\"], [class*=\"menu\"], [class*=\"select\"], [class*=\"list\"]')) {" +
-                "          opsiSaham = item;" +
                 "          break;" +
                 "        }" +
+                "        container = container.parentElement;" +
                 "      }" +
-                "    }" +
-                "" +
-                "    if (opsiSaham) {" +
-                "      triggerKlik(opsiSaham);" +
-                "      telahDipilih = true;" +
-                "      return;" +
-                "    }" +
-                "" +
-                "    /* C. Jika opsi belum terlihat, cari tombol pemicu dropdown 'Jenis - Semua' */" +
-                "    var kotakJenis = null;" +
-                "    var semuaElem = document.querySelectorAll('button, div, span, input, a');" +
-                "    for (var i = 0; i < semuaElem.length; i++) {" +
-                "      var txt = (semuaElem[i].innerText || semuaElem[i].value || '').trim();" +
-                "      if (txt === 'Jenis - Semua') {" +
-                "        kotakJenis = semuaElem[i];" +
-                "        break;" +
-                "      }" +
-                "    }" +
-                "" +
-                "    if (kotakJenis) {" +
-                "      /* Klik buka secara berkala dan beri jeda agar dropdown tidak langsung tertutup kembali */" +
-                "      if (hitungBuka % 2 === 0) {" +
-                "        var targetKlik = kotakJenis.closest('button, [role=\"button\"], .multiselect, .v-select, .dropdown-toggle') || kotakJenis;" +
-                "        triggerKlik(targetKlik);" +
-                "      }" +
-                "      hitungBuka++;" +
-                "    } else {" +
-                "      /* Cek apakah tombol jenis sudah berubah menjadi 'Saham' */" +
-                "      for (var m = 0; m < semuaElem.length; m++) {" +
-                "        var t = (semuaElem[m].innerText || semuaElem[m].value || '').trim();" +
-                "        if (t === 'Saham' && (semuaElem[m].closest('.multiselect, .v-select, .dropdown') || semuaElem[m].getAttribute('role') === 'button')) {" +
-                "          telahDipilih = true;" +
-                "          return;" +
-                "        }" +
-                "      }" +
+                "      if (!jdl) jdl = namaFile;" +
+                "      hasil.push({ title: jdl, date: tgl, fileName: namaFile, url: href });" +
+                "    });" +
+                "    if (hasil.length > 0) {" +
+                "      AndroidBridge.kirimDataPengumuman(JSON.stringify(hasil));" +
                 "    }" +
                 "  }" +
                 "" +
-                "  bersihkanTeksBreadcrumb();" +
-                "  jalankanPilihanSaham();" +
-                "" +
+                "  ambilDaftar();" +
                 "  var putaran = 0;" +
                 "  var timer = setInterval(function() {" +
                 "    putaran++;" +
-                "    bersihkanTeksBreadcrumb();" +
-                "    jalankanPilihanSaham();" +
-                "    if (telahDipilih || putaran > 30) {" +
-                "      clearInterval(timer);" +
-                "    }" +
-                "  }, 400);" +
+                "    ambilDaftar();" +
+                "    if (putaran >= 6) clearInterval(timer);" +
+                "  }, 800);" +
                 "})()";
 
         view.loadUrl(js);
     }
 
-    private boolean isDownloadableFile(String url) {
-        if (url == null) return false;
-        String u = url.toLowerCase();
-        return u.endsWith(".pdf") || u.contains(".pdf?") ||
-               u.endsWith(".zip") || u.contains(".zip?") ||
-               u.endsWith(".xlsx") || u.contains(".xlsx?") ||
-               u.endsWith(".docx") || u.contains(".docx?");
+    private void prosesHasilEkstraksi(String jsonStr) {
+        try {
+            JSONArray arr = new JSONArray(jsonStr);
+            if (arr.length() == 0) return;
+
+            allItems.clear();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject obj = arr.getJSONObject(i);
+                String t = obj.optString("title", "");
+                String d = obj.optString("date", "");
+                String f = obj.optString("fileName", "");
+                String u = obj.optString("url", "");
+                if (!u.isEmpty()) {
+                    allItems.add(new AnnouncementItem(t, d, f, u));
+                }
+            }
+
+            loadingBar.setVisibility(View.GONE);
+            applyFilter();
+
+            Toast.makeText(this, "Berhasil memuat " + allItems.size() + " pengumuman.", Toast.LENGTH_SHORT).show();
+        } catch (Exception ignored) {}
     }
 
-    private void checkPermissionAndDownload(String url, String contentDisposition, String mimeType) {
+    private void applyFilter() {
+        displayItems.clear();
+        listTitles.clear();
+
+        for (AnnouncementItem item : allItems) {
+            if (filterQuery.isEmpty() ||
+                item.title.toLowerCase(Locale.ROOT).contains(filterQuery.toLowerCase(Locale.ROOT)) ||
+                item.code.toLowerCase(Locale.ROOT).contains(filterQuery.toLowerCase(Locale.ROOT))) {
+
+                displayItems.add(item);
+                String label = String.format("%d. %s\n(%s)",
+                        displayItems.size(),
+                        item.title,
+                        item.date.isEmpty() ? "Terbaru" : item.date);
+                listTitles.add(label);
+            }
+        }
+
+        listAdapter.notifyDataSetChanged();
+
+        String status = "Ditemukan " + displayItems.size() + " pengumuman";
+        if (!filterQuery.isEmpty()) {
+            status += " (Filter: " + filterQuery + ")";
+        }
+        statusTextView.setText(status);
+    }
+
+    // Menu dialog bergaya Pengelola GitHub
+    private void showAnnouncementDialogMenu() {
+        if (displayItems.isEmpty()) {
+            Toast.makeText(this, "Daftar pengumuman masih kosong.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        String[] itemLabels = new String[displayItems.size() + 2];
+        itemLabels[0] = "Segarkan pengumuman";
+        itemLabels[1] = filterQuery.isEmpty() ? "Cari / Filter kode saham" : "Hapus filter saat ini (" + filterQuery + ")";
+
+        for (int i = 0; i < displayItems.size(); i++) {
+            AnnouncementItem it = displayItems.get(i);
+            String prefix = it.code.isEmpty() ? "" : "[" + it.code + "] ";
+            itemLabels[i + 2] = String.format("%d. %s%s", i + 1, prefix, it.title);
+        }
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("Pengumuman Saham IDX (" + displayItems.size() + ")");
+        b.setItems(itemLabels, (dialog, which) -> {
+            if (which == 0) {
+                refreshData();
+            } else if (which == 1) {
+                if (filterQuery.isEmpty()) {
+                    showSearchDialog();
+                } else {
+                    filterQuery = "";
+                    applyFilter();
+                    Toast.makeText(this, "Filter dihapus.", Toast.LENGTH_SHORT).show();
+                }
+            } else {
+                int itemIdx = which - 2;
+                if (itemIdx >= 0 && itemIdx < displayItems.size()) {
+                    showDetailActionDialog(displayItems.get(itemIdx));
+                }
+            }
+        });
+        b.setNegativeButton("tutup", null);
+        b.show();
+    }
+
+    // Dialog aksi saat suatu pengumuman dipilih
+    private void showDetailActionDialog(AnnouncementItem item) {
+        String pesan = "Judul:\n" + item.title + "\n\n" +
+                "Tanggal Rilis:\n" + (item.date.isEmpty() ? "-" : item.date) + "\n\n" +
+                "Nama Berkas:\n" + (item.fileName.isEmpty() ? "Lampiran.pdf" : item.fileName);
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle(item.code.isEmpty() ? "Rincian Pengumuman" : "Emiten: [" + item.code + "]");
+        b.setMessage(pesan);
+
+        b.setPositiveButton("unduh PDF", (d, w) -> {
+            checkPermissionAndDownload(item.url, item.fileName);
+        });
+
+        b.setNeutralButton("salin tautan", (d, w) -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("Tautan PDF IDX", item.url));
+                Toast.makeText(this, "Tautan PDF berhasil disalin!", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        b.setNegativeButton("kembali", null);
+        b.show();
+    }
+
+    private void showSearchDialog() {
+        EditText input = new EditText(this);
+        input.setHint("Contoh: BBCA, PTPP, atau kata kunci");
+        input.setSingleLine(true);
+        if (!filterQuery.isEmpty()) {
+            input.setText(filterQuery);
+        }
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("Cari Pengumuman / Saham");
+        b.setMessage("Masukkan 4 huruf kode saham atau kata kunci:");
+        b.setView(input);
+
+        b.setPositiveButton("terapkan", (d, w) -> {
+            filterQuery = input.getText().toString().trim();
+            applyFilter();
+            Toast.makeText(this, "Menampilkan " + displayItems.size() + " hasil.", Toast.LENGTH_SHORT).show();
+        });
+
+        b.setNeutralButton("reset filter", (d, w) -> {
+            filterQuery = "";
+            applyFilter();
+        });
+
+        b.setNegativeButton("batal", null);
+        b.show();
+    }
+
+    private void refreshData() {
+        if (!isOnline()) {
+            statusTextView.setText("Koneksi terputus");
+            Toast.makeText(this, "Tidak ada koneksi internet.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        loadingBar.setVisibility(View.VISIBLE);
+        statusTextView.setText("Menghubungkan ke server IDX...");
+        hiddenWebView.loadUrl(IDX_URL);
+    }
+
+    private boolean isOnline() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm != null) {
+            NetworkInfo n = cm.getActiveNetworkInfo();
+            return n != null && n.isConnected();
+        }
+        return false;
+    }
+
+    private void checkPermissionAndDownload(String url, String fileName) {
         if (Build.VERSION.SDK_INT >= 23 && Build.VERSION.SDK_INT <= 28) {
             if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                 pendingDownloadUrl = url;
-                pendingContentDisposition = contentDisposition;
-                pendingMimeType = mimeType;
+                pendingDownloadName = fileName;
                 requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_STORAGE);
                 return;
             }
         }
-        executeDownload(url, contentDisposition, mimeType);
+        startDownload(url, fileName);
     }
 
     @Override
@@ -324,92 +456,49 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_STORAGE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             if (!pendingDownloadUrl.isEmpty()) {
-                executeDownload(pendingDownloadUrl, pendingContentDisposition, pendingMimeType);
+                startDownload(pendingDownloadUrl, pendingDownloadName);
                 pendingDownloadUrl = "";
+                pendingDownloadName = "";
             }
         } else {
-            Toast.makeText(this, "Izin penyimpanan dibutuhkan untuk mengunduh berkas.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Izin penyimpanan dibutuhkan untuk mengunduh.", Toast.LENGTH_SHORT).show();
         }
     }
 
-    private void executeDownload(String url, String contentDisposition, String mimeType) {
+    private void startDownload(String url, String fileName) {
         try {
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            String fileName = URLUtil.guessFileName(url, contentDisposition, mimeType);
-
-            if (mimeType != null && mimeType.equalsIgnoreCase("application/pdf") && !fileName.toLowerCase().endsWith(".pdf")) {
+            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+            if (fileName == null || fileName.isEmpty()) {
+                fileName = URLUtil.guessFileName(url, null, "application/pdf");
+            }
+            if (!fileName.toLowerCase().endsWith(".pdf")) {
                 fileName += ".pdf";
             }
 
             String cookies = CookieManager.getInstance().getCookie(url);
             if (cookies != null) {
-                request.addRequestHeader("cookie", cookies);
+                req.addRequestHeader("cookie", cookies);
             }
-            request.addRequestHeader("User-Agent", webView.getSettings().getUserAgentString());
-            request.setDescription("Mengunduh dokumen keterbukaan informasi saham...");
-            request.setTitle(fileName);
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+            req.addRequestHeader("User-Agent", hiddenWebView.getSettings().getUserAgentString());
+            req.setDescription("Mengunduh dokumen pengumuman saham IDX...");
+            req.setTitle(fileName);
+            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
 
             DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
             if (dm != null) {
-                dm.enqueue(request);
-                Toast.makeText(this, "Mulai mengunduh: " + fileName, Toast.LENGTH_SHORT).show();
+                dm.enqueue(req);
+                Toast.makeText(this, "Mengunduh: " + fileName, Toast.LENGTH_SHORT).show();
             }
         } catch (Exception e) {
-            Toast.makeText(this, "Gagal mengunduh berkas laporan.", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void loadIdxPage() {
-        if (!isOnline()) {
-            Toast.makeText(this, "Tidak ada koneksi internet. Periksa koneksi Anda.", Toast.LENGTH_LONG).show();
-            statusText.setText("Koneksi terputus");
-            return;
-        }
-        webView.loadUrl(IDX_URL);
-    }
-
-    private void refreshPage() {
-        if (!isOnline()) {
-            Toast.makeText(this, "Koneksi terputus. Gagal menyegarkan.", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        statusText.setText("Menyegarkan halaman...");
-        Toast.makeText(this, "Menyegarkan data saham...", Toast.LENGTH_SHORT).show();
-        webView.reload();
-    }
-
-    private boolean isOnline() {
-        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        if (cm != null) {
-            NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
-            return activeNetwork != null && activeNetwork.isConnected();
-        }
-        return false;
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (webView != null) {
-            webView.reload();
-        }
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
+            Toast.makeText(this, "Gagal mengunduh berkas.", Toast.LENGTH_SHORT).show();
         }
     }
 
     @Override
     protected void onDestroy() {
-        if (webView != null) {
-            webView.destroy();
+        if (hiddenWebView != null) {
+            hiddenWebView.destroy();
         }
         super.onDestroy();
     }
