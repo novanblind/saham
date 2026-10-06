@@ -3,7 +3,7 @@ package com.sahamglobal;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.DownloadManager;
+import android.app.ProgressDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -11,13 +11,15 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.graphics.Color;
+import android.media.MediaScannerConnection;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -39,13 +41,22 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final String IDX_URL = "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi";
     private static final int REQ_STORAGE = 102;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private WebView hiddenWebView;
     private TextView statusTextView;
@@ -94,12 +105,12 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Tata letak utama native Android murni (Sangat ramah pembaca layar)
+        // Tata letak utama antarmuka native (Aksesibel untuk pembaca layar)
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(16, 16, 16, 16);
 
-        // Baris status & indikator
+        // Baris status koneksi & pemuatan
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -110,7 +121,7 @@ public class MainActivity extends Activity {
         statusRow.addView(loadingBar);
 
         statusTextView = new TextView(this);
-        statusTextView.setText("Menghubungkan ke server IDX...");
+        statusTextView.setText("Menghubungkan ke server IDX (Khusus Saham)...");
         statusTextView.setTextSize(14);
         statusTextView.setPadding(16, 0, 0, 0);
         statusRow.addView(statusTextView);
@@ -144,7 +155,7 @@ public class MainActivity extends Activity {
 
         root.addView(buttonRow);
 
-        // Daftar tampilan pengumuman (Native ListView)
+        // Tampilan daftar pengumuman saham
         announcementListView = new ListView(this);
         announcementListView.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
@@ -160,7 +171,7 @@ public class MainActivity extends Activity {
 
         root.addView(announcementListView);
 
-        // WebView tersembunyi (Hanya sebagai mesin pengambil data di latar belakang)
+        // WebView tersembunyi sebagai parser data di latar belakang
         hiddenWebView = new WebView(this);
         hiddenWebView.setVisibility(View.GONE);
         root.addView(hiddenWebView);
@@ -176,14 +187,14 @@ public class MainActivity extends Activity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
-        s.setLoadsImagesAutomatically(false); // Hemat kuota & sangat cepat
+        s.setLoadsImagesAutomatically(false);
         s.setBlockNetworkImage(true);
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
         hiddenWebView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void kirimDataPengumuman(String json) {
-                runOnUiThread(() -> prosesHasilEkstraksi(json));
+                mainHandler.post(() -> prosesHasilEkstraksi(json));
             }
         }, "AndroidBridge");
 
@@ -198,7 +209,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                statusTextView.setText("Menganalisis pengumuman saham...");
+                statusTextView.setText("Memilih kategori Saham & menganalisis...");
                 injeksiEkstraktorPengumuman(view);
             }
         });
@@ -206,33 +217,41 @@ public class MainActivity extends Activity {
 
     private void injeksiEkstraktorPengumuman(WebView view) {
         String js = "javascript:(function() {" +
-                "  /* 1. Otomatis pilih opsi 'Saham' jika belum */" +
-                "  var pemicu = document.querySelectorAll('button, div, span, input, a');" +
-                "  for (var k = 0; k < pemicu.length; k++) {" +
-                "    var txt = (pemicu[k].innerText || pemicu[k].value || '').trim();" +
-                "    if (txt === 'Jenis - Semua') {" +
-                "      var btn = pemicu[k].closest('button, [role=\"button\"], .multiselect, .v-select') || pemicu[k];" +
-                "      try { btn.click(); } catch(e){}" +
-                "      break;" +
-                "    }" +
-                "  }" +
-                "  var opsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
-                "  for (var m = 0; m < opsi.length; m++) {" +
-                "    if ((opsi[m].innerText || opsi[m].textContent || '').trim() === 'Saham') {" +
-                "      try { opsi[m].click(); } catch(e){}" +
-                "      break;" +
+                "  /* 1. Otomatis pilih jenis 'Saham' pada dropdown situs */" +
+                "  function aktifkanDropdownSaham() {" +
+                "    var elemen = document.querySelectorAll('button, div, span, input, a');" +
+                "    for (var k = 0; k < elemen.length; k++) {" +
+                "      var txt = (elemen[k].innerText || elemen[k].value || '').trim();" +
+                "      if (txt === 'Jenis - Semua') {" +
+                "        var btn = elemen[k].closest('button, [role=\"button\"], .multiselect, .v-select') || elemen[k];" +
+                "        try { btn.click(); } catch(e){}" +
+                "        setTimeout(function() {" +
+                "          var opsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
+                "          for (var m = 0; m < opsi.length; m++) {" +
+                "            var namaOpsi = (opsi[m].innerText || opsi[m].textContent || '').trim();" +
+                "            if (namaOpsi === 'Saham') {" +
+                "              try {" +
+                "                opsi[m].click();" +
+                "                opsi[m].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));" +
+                "              } catch(e){}" +
+                "              break;" +
+                "            }" +
+                "          }" +
+                "        }, 350);" +
+                "        break;" +
+                "      }" +
                 "    }" +
                 "  }" +
                 "" +
-                "  /* 2. Ekstraksi daftar pengumuman saham */" +
+                "  /* 2. Ekstraksi daftar pengumuman */" +
                 "  function ambilDaftar() {" +
                 "    var hasil = [];" +
                 "    var pdfLinks = document.querySelectorAll('a[href*=\".pdf\"], a[href*=\"lamp\"]');" +
-                "    var seen = {};" +
+                "    var seenUrl = {};" +
                 "    pdfLinks.forEach(function(a) {" +
                 "      var href = a.href;" +
-                "      if (seen[href]) return;" +
-                "      seen[href] = true;" +
+                "      if (!href || seenUrl[href]) return;" +
+                "      seenUrl[href] = true;" +
                 "      var namaFile = (a.innerText || a.textContent || '').trim();" +
                 "      var container = a.parentElement;" +
                 "      var tgl = '';" +
@@ -262,16 +281,66 @@ public class MainActivity extends Activity {
                 "    }" +
                 "  }" +
                 "" +
-                "  ambilDaftar();" +
+                "  aktifkanDropdownSaham();" +
                 "  var putaran = 0;" +
                 "  var timer = setInterval(function() {" +
                 "    putaran++;" +
+                "    aktifkanDropdownSaham();" +
                 "    ambilDaftar();" +
-                "    if (putaran >= 6) clearInterval(timer);" +
+                "    if (putaran >= 8) clearInterval(timer);" +
                 "  }, 800);" +
                 "})()";
 
         view.loadUrl(js);
+    }
+
+    /**
+     * Filter ketat khusus kategori Saham:
+     * Menyaring dan membuang instrumen non-saham (ETF, Reksa Dana, Obligasi, Sukuk, EBA, DIRE).
+     */
+    private boolean isKategoriSahamMurni(AnnouncementItem item) {
+        String t = (item.title + " " + item.fileName).toLowerCase(Locale.ROOT);
+
+        // 1. Buang laporan harian Nilai Aktiva Bersih (NAB) / ETF / Reksa Dana
+        if (t.contains("nilai aktiva bersih") ||
+            t.contains("komposisi portofolio") ||
+            t.contains("laporan harian nab") ||
+            t.contains("etf") ||
+            t.contains("reksa dana") ||
+            t.contains("reksadana")) {
+            return false;
+        }
+
+        // 2. Buang laporan instrumen Obligasi & Sukuk
+        if (t.contains("obligasi") ||
+            t.contains("sukuk") ||
+            t.contains("surat utang") ||
+            t.contains("kupon") ||
+            t.contains("bunga tahunan") ||
+            t.contains("jatuh tempo obligasi")) {
+            return false;
+        }
+
+        // 3. Buang instrumen EBA & DIRE / DINFRA
+        if (t.contains("efek beragun") ||
+            t.contains("eba") ||
+            t.contains("dire ") ||
+            t.contains("dinfra")) {
+            return false;
+        }
+
+        // 4. Buang kode ticker ETF (Di BEI semua ETF diawali huruf 'X', misal XDIF, XDES, XIJI, dll) atau 'R-'
+        if (item.code != null && !item.code.isEmpty()) {
+            String c = item.code.toUpperCase(Locale.ROOT);
+            if (c.startsWith("X") && c.length() == 4) {
+                return false;
+            }
+            if (c.startsWith("R-")) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void prosesHasilEkstraksi(String jsonStr) {
@@ -280,21 +349,34 @@ public class MainActivity extends Activity {
             if (arr.length() == 0) return;
 
             allItems.clear();
+            Set<String> seenPost = new HashSet<>();
+
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject obj = arr.getJSONObject(i);
                 String t = obj.optString("title", "");
                 String d = obj.optString("date", "");
                 String f = obj.optString("fileName", "");
                 String u = obj.optString("url", "");
+
                 if (!u.isEmpty()) {
-                    allItems.add(new AnnouncementItem(t, d, f, u));
+                    AnnouncementItem item = new AnnouncementItem(t, d, f, u);
+
+                    // Hanya masukkan jika benar-benar instrumen SAHAM MURNI
+                    if (isKategoriSahamMurni(item)) {
+                        // Hilangkan duplikasi pengumuman ganda (judul dan tanggal sama)
+                        String postKey = item.title.trim().toLowerCase(Locale.ROOT) + "|" + item.date.trim();
+                        if (!seenPost.contains(postKey)) {
+                            seenPost.add(postKey);
+                            allItems.add(item);
+                        }
+                    }
                 }
             }
 
             loadingBar.setVisibility(View.GONE);
             applyFilter();
 
-            Toast.makeText(this, "Berhasil memuat " + allItems.size() + " pengumuman.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Berhasil memuat " + allItems.size() + " pengumuman saham.", Toast.LENGTH_SHORT).show();
         } catch (Exception ignored) {}
     }
 
@@ -318,9 +400,9 @@ public class MainActivity extends Activity {
 
         listAdapter.notifyDataSetChanged();
 
-        String status = "Ditemukan " + displayItems.size() + " pengumuman";
+        String status = "Kategori: Saham (" + displayItems.size() + " pengumuman)";
         if (!filterQuery.isEmpty()) {
-            status += " (Filter: " + filterQuery + ")";
+            status += " [Filter: " + filterQuery + "]";
         }
         statusTextView.setText(status);
     }
@@ -328,7 +410,7 @@ public class MainActivity extends Activity {
     // Menu dialog bergaya Pengelola GitHub
     private void showAnnouncementDialogMenu() {
         if (displayItems.isEmpty()) {
-            Toast.makeText(this, "Daftar pengumuman masih kosong.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Daftar pengumuman saham kosong.", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -366,7 +448,7 @@ public class MainActivity extends Activity {
         b.show();
     }
 
-    // Dialog aksi saat suatu pengumuman dipilih
+    // Dialog rincian aksi saat salah satu pengumuman dipilih
     private void showDetailActionDialog(AnnouncementItem item) {
         String pesan = "Judul:\n" + item.title + "\n\n" +
                 "Tanggal Rilis:\n" + (item.date.isEmpty() ? "-" : item.date) + "\n\n" +
@@ -427,7 +509,7 @@ public class MainActivity extends Activity {
             return;
         }
         loadingBar.setVisibility(View.VISIBLE);
-        statusTextView.setText("Menghubungkan ke server IDX...");
+        statusTextView.setText("Menghubungkan ke server IDX (Khusus Saham)...");
         hiddenWebView.loadUrl(IDX_URL);
     }
 
@@ -449,7 +531,7 @@ public class MainActivity extends Activity {
                 return;
             }
         }
-        startDownload(url, fileName);
+        downloadFileWithInternalEngine(url, fileName);
     }
 
     @Override
@@ -457,7 +539,7 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_STORAGE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             if (!pendingDownloadUrl.isEmpty()) {
-                startDownload(pendingDownloadUrl, pendingDownloadName);
+                downloadFileWithInternalEngine(pendingDownloadUrl, pendingDownloadName);
                 pendingDownloadUrl = "";
                 pendingDownloadName = "";
             }
@@ -466,34 +548,164 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void startDownload(String url, String fileName) {
+    /**
+     * Pengunduh Internal Kuat (Background Thread):
+     * Menyertakan Header Browser Asli (Referer, User-Agent, Cookie) & mengikuti redirect
+     * sehingga TIDAK AKAN DITOLAK (403 Forbidden) oleh server Bursa Efek Indonesia.
+     */
+    private void downloadFileWithInternalEngine(String urlTarget, String initialFileName) {
+        ProgressDialog progress = new ProgressDialog(this);
+        progress.setTitle("Mengunduh Berkas Laporan");
+        progress.setMessage("Menghubungkan ke server pengunduhan...");
+        progress.setCancelable(false);
+        progress.show();
+
+        new Thread(() -> {
+            try {
+                String userAgent = hiddenWebView.getSettings().getUserAgentString();
+                String cookie = CookieManager.getInstance().getCookie(urlTarget);
+
+                URL url = new URL(urlTarget);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", userAgent);
+                conn.setRequestProperty("Referer", IDX_URL); // WAJIB untuk melewati proteksi IDX
+                conn.setRequestProperty("Accept", "application/pdf,*/*");
+                if (cookie != null && !cookie.isEmpty()) {
+                    conn.setRequestProperty("Cookie", cookie);
+                }
+                conn.setConnectTimeout(25000);
+                conn.setReadTimeout(45000);
+
+                int respCode = conn.getResponseCode();
+                // Tangani pengalihan (301, 302, 307)
+                if (respCode == HttpURLConnection.HTTP_MOVED_PERM || 
+                    respCode == HttpURLConnection.HTTP_MOVED_TEMP || 
+                    respCode == 307) {
+                    String redirectUrl = conn.getHeaderField("Location");
+                    conn.disconnect();
+
+                    if (redirectUrl != null) {
+                        url = new URL(redirectUrl);
+                        conn = (HttpURLConnection) url.openConnection();
+                        conn.setRequestMethod("GET");
+                        conn.setRequestProperty("User-Agent", userAgent);
+                        conn.setRequestProperty("Referer", IDX_URL);
+                        conn.setRequestProperty("Accept", "application/pdf,*/*");
+                        if (cookie != null && !cookie.isEmpty()) {
+                            conn.setRequestProperty("Cookie", cookie);
+                        }
+                        conn.setConnectTimeout(25000);
+                        conn.setReadTimeout(45000);
+                        respCode = conn.getResponseCode();
+                    }
+                }
+
+                if (respCode < 200 || respCode >= 300) {
+                    throw new Exception("Server IDX menolak permintaan dengan kode HTTP: " + respCode);
+                }
+
+                // Tentukan nama berkas yang aman dan valid
+                String safeName = initialFileName;
+                if (safeName == null || safeName.trim().isEmpty()) {
+                    safeName = URLUtil.guessFileName(urlTarget, null, "application/pdf");
+                }
+                // Bersihkan karakter terlarang pada nama berkas
+                safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+                if (!safeName.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+                    safeName += ".pdf";
+                }
+
+                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (!downloadDir.exists()) {
+                    downloadDir.mkdirs();
+                }
+
+                File targetFile = new File(downloadDir, safeName);
+                InputStream is = conn.getInputStream();
+                FileOutputStream fos = new FileOutputStream(targetFile);
+
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = is.read(buffer)) != -1) {
+                    fos.write(buffer, 0, bytesRead);
+                }
+
+                fos.flush();
+                fos.close();
+                is.close();
+                conn.disconnect();
+
+                // Daftarkan ke sistem agar langsung terdeteksi di galeri/file manager
+                MediaScannerConnection.scanFile(this, new String[]{targetFile.getAbsolutePath()}, null, null);
+
+                String finalPath = targetFile.getAbsolutePath();
+                String finalName = safeName;
+
+                mainHandler.post(() -> {
+                    pcallDismiss(progress);
+                    showDownloadSuccessDialog(finalName, finalPath);
+                });
+
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    pcallDismiss(progress);
+                    showDownloadErrorDialog(e.getMessage(), urlTarget);
+                });
+            }
+        }).start();
+    }
+
+    private void showDownloadSuccessDialog(String fileName, String filePath) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("Unduhan Selesai");
+        b.setMessage("Berkas PDF berhasil diunduh dan tersimpan di folder Download:\n\n" + fileName);
+
+        b.setPositiveButton("buka PDF", (d, w) -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                Uri uri = Uri.fromFile(new File(filePath));
+                intent.setDataAndType(uri, "application/pdf");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception err) {
+                Toast.makeText(this, "Berkas ada di folder Download ponsel Anda.", Toast.LENGTH_LONG).show();
+            }
+        });
+
+        b.setNegativeButton("tutup", null);
+        b.show();
+    }
+
+    private void showDownloadErrorDialog(String errMessage, String urlTarget) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle("Gagal Mengunduh");
+        b.setMessage("Kesalahan: " + errMessage);
+
+        b.setPositiveButton("salin tautan", (d, w) -> {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("Tautan Unduhan", urlTarget));
+                Toast.makeText(this, "Tautan berhasil disalin.", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        b.setNeutralButton("buka di browser", (d, w) -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(urlTarget));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception ignored) {}
+        });
+
+        b.setNegativeButton("tutup", null);
+        b.show();
+    }
+
+    private void pcallDismiss(ProgressDialog p) {
         try {
-            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-            if (fileName == null || fileName.isEmpty()) {
-                fileName = URLUtil.guessFileName(url, null, "application/pdf");
-            }
-            if (!fileName.toLowerCase().endsWith(".pdf")) {
-                fileName += ".pdf";
-            }
-
-            String cookies = CookieManager.getInstance().getCookie(url);
-            if (cookies != null) {
-                req.addRequestHeader("cookie", cookies);
-            }
-            req.addRequestHeader("User-Agent", hiddenWebView.getSettings().getUserAgentString());
-            req.setDescription("Mengunduh dokumen pengumuman saham IDX...");
-            req.setTitle(fileName);
-            req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
-
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (dm != null) {
-                dm.enqueue(req);
-                Toast.makeText(this, "Mengunduh: " + fileName, Toast.LENGTH_SHORT).show();
-            }
-        } catch (Exception e) {
-            Toast.makeText(this, "Gagal mengunduh berkas.", Toast.LENGTH_SHORT).show();
-        }
+            if (p != null && p.isShowing()) p.dismiss();
+        } catch (Exception ignored) {}
     }
 
     @Override
