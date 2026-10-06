@@ -548,24 +548,30 @@ public class MainActivity extends Activity {
         progress.show();
 
         // Ambil User-Agent & Cookie di Main Thread untuk mencegah error WebView threading
-        String userAgent;
+        String tempUa = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
         try {
-            userAgent = hiddenWebView.getSettings().getUserAgentString();
-        } catch (Exception e) {
-            userAgent = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-        }
-        String cookie = CookieManager.getInstance().getCookie(urlTarget);
+            if (hiddenWebView != null && hiddenWebView.getSettings() != null) {
+                tempUa = hiddenWebView.getSettings().getUserAgentString();
+            }
+        } catch (Exception ignored) {}
+        final String finalUserAgent = tempUa;
+
+        String tempCookie = "";
+        try {
+            tempCookie = CookieManager.getInstance().getCookie(urlTarget);
+        } catch (Exception ignored) {}
+        final String finalCookie = tempCookie;
 
         new Thread(() -> {
             try {
                 URL url = new URL(urlTarget);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
-                conn.setRequestProperty("User-Agent", userAgent);
+                conn.setRequestProperty("User-Agent", finalUserAgent);
                 conn.setRequestProperty("Referer", IDX_URL);
                 conn.setRequestProperty("Accept", "application/pdf,*/*");
-                if (cookie != null && !cookie.isEmpty()) {
-                    conn.setRequestProperty("Cookie", cookie);
+                if (finalCookie != null && !finalCookie.isEmpty()) {
+                    conn.setRequestProperty("Cookie", finalCookie);
                 }
                 conn.setConnectTimeout(25000);
                 conn.setReadTimeout(45000);
@@ -581,7 +587,7 @@ public class MainActivity extends Activity {
                         url = new URL(redirectUrl);
                         conn = (HttpURLConnection) url.openConnection();
                         conn.setRequestMethod("GET");
-                        conn.setRequestProperty("User-Agent", userAgent);
+                        conn.setRequestProperty("User-Agent", finalUserAgent);
                         conn.setRequestProperty("Referer", IDX_URL);
                         conn.setRequestProperty("Accept", "application/pdf,*/*");
                         if (cookie != null && !cookie.isEmpty()) {
