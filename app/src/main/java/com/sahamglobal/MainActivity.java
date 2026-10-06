@@ -4,7 +4,6 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.DownloadManager;
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
@@ -50,7 +49,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
-        // Baris tombol atas
+        // Baris tombol kontrol atas yang ramah pembaca layar
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setPadding(16, 12, 16, 12);
@@ -76,7 +75,7 @@ public class MainActivity extends Activity {
         progressBar.setVisibility(View.GONE);
         root.addView(progressBar);
 
-        // WebView penampil keterbukaan informasi
+        // WebView untuk membuka keterbukaan informasi
         webView = new WebView(this);
         LinearLayout.LayoutParams webParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
@@ -93,6 +92,7 @@ public class MainActivity extends Activity {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
         settings.setLoadsImagesAutomatically(true);
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
@@ -101,10 +101,10 @@ public class MainActivity extends Activity {
         settings.setDisplayZoomControls(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
-        // Muat data langsung tanpa cache agar selalu segar
+        // Selalu muat data terkini tanpa cache usang
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
-        // 1. Perintah tangkap unduhan otomatis dari web
+        // 1. Penanganan unduh otomatis saat tombol/lampiran PDF ditekan
         webView.setDownloadListener(new DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 progressBar.setVisibility(View.VISIBLE);
-                statusText.setText("Memuat data saham terbaru...");
+                statusText.setText("Memuat data keterbukaan informasi...");
             }
 
             @Override
@@ -126,15 +126,11 @@ public class MainActivity extends Activity {
                 progressBar.setVisibility(View.GONE);
                 statusText.setText("Halaman berhasil diperbarui");
 
-                // Sembunyikan bagian header dan footer agar pembaca layar langsung membaca daftar tabel pengumuman
-                String cleanJs = "javascript:(function() {" +
-                        "var elements = document.querySelectorAll('header, footer, .banner, .header-wrapper');" +
-                        "for (var i = 0; i < elements.length; i++) { elements[i].style.display = 'none'; }" +
-                        "})()";
-                view.loadUrl(cleanJs);
+                // Injeksi skrip khusus aksesibilitas pembaca layar dan otomatis memilih Saham
+                terapkanOptimasiAksesibilitasDanPilihSaham(view);
             }
 
-            // 2. Perintah cegat tautan dokumen PDF/lampiran agar tidak blank
+            // 2. Cegat tautan PDF dan dokumen agar langsung mengunduh dan tidak macet
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (Build.VERSION.SDK_INT >= 24) {
@@ -167,6 +163,76 @@ public class MainActivity extends Activity {
                 }
             }
         });
+    }
+
+    /**
+     * Skrip JavaScript untuk:
+     * 1. Menghilangkan elemen pengganggu agar pembaca layar nyaman saat navigasi usap.
+     * 2. Otomatis mencentang / memilih opsi 'Saham' pada filter jenis instrumen.
+     */
+    private void terapkanOptimasiAksesibilitasDanPilihSaham(WebView view) {
+        String js = "javascript:(function() {" +
+                "  function bersihkanTampilan() {" +
+                "    /* Sembunyikan header situs, menu navigasi atas, footer, tombol melayang WhatsApp, dan breadcrumb */" +
+                "    var elemenHapus = document.querySelectorAll(" +
+                "      'header, footer, nav, .header-wrapper, .navbar, .banner, .breadcrumb, ' +" +
+                "      '[class*=\"floating\"], [class*=\"whatsapp\"], [class*=\"chat\"], [id*=\"chat\"], ' +" +
+                "      '.v-tour, .help-widget, iframe[src*=\"whatsapp\"]'" +
+                "    );" +
+                "    for (var i = 0; i < elemenHapus.length; i++) {" +
+                "      elemenHapus[i].style.setProperty('display', 'none', 'important');" +
+                "    }" +
+                "  }" +
+                "" +
+                "  function otomatisPilihSaham() {" +
+                "    /* 1. Periksa elemen select bawaan */" +
+                "    var selects = document.querySelectorAll('select');" +
+                "    selects.forEach(function(sel) {" +
+                "      for (var j = 0; j < sel.options.length; j++) {" +
+                "        var optText = sel.options[j].text.trim().toLowerCase();" +
+                "        if (optText === 'saham') {" +
+                "          if (sel.selectedIndex !== j) {" +
+                "            sel.selectedIndex = j;" +
+                "            sel.dispatchEvent(new Event('change', { bubbles: true }));" +
+                "          }" +
+                "        }" +
+                "      }" +
+                "    });" +
+                "" +
+                "    /* 2. Periksa dropdown kustom (Vue/Nuxt) */" +
+                "    var pemicu = document.querySelectorAll('button, div, span, input');" +
+                "    for (var k = 0; k < pemicu.length; k++) {" +
+                "      var txt = (pemicu[k].innerText || pemicu[k].value || '').trim();" +
+                "      if (txt === 'Jenis - Semua') {" +
+                "        pemicu[k].click();" +
+                "        break;" +
+                "      }" +
+                "    }" +
+                "" +
+                "    /* Cari opsi pilihan 'Saham' pada daftar dropdown dan klik */" +
+                "    var daftarOpsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
+                "    for (var m = 0; m < daftarOpsi.length; m++) {" +
+                "      var namaOpsi = (daftarOpsi[m].innerText || daftarOpsi[m].textContent || '').trim();" +
+                "      if (namaOpsi === 'Saham' && daftarOpsi[m].offsetParent !== null) {" +
+                "        daftarOpsi[m].click();" +
+                "        break;" +
+                "      }" +
+                "    }" +
+                "  }" +
+                "" +
+                "  /* Jalankan berkala selama beberapa detik karena IDX memuat filter secara dinamis */" +
+                "  bersihkanTampilan();" +
+                "  otomatisPilihSaham();" +
+                "  var coba = 0;" +
+                "  var pengulang = setInterval(function() {" +
+                "    coba++;" +
+                "    bersihkanTampilan();" +
+                "    otomatisPilihSaham();" +
+                "    if (coba >= 8) clearInterval(pengulang);" +
+                "  }, 500);" +
+                "})()";
+
+        view.loadUrl(js);
     }
 
     private boolean isDownloadableFile(String url) {
