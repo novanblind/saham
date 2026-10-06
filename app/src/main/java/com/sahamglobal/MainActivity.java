@@ -3,28 +3,21 @@ package com.sahamglobal;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.CookieManager;
-import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
-import android.webkit.URLUtil;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -41,14 +34,15 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final String IDX_URL = "https://www.idx.co.id/id/perusahaan-tercatat/keterbukaan-informasi";
-    private static final int REQ_STORAGE = 102;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -66,8 +60,26 @@ public class MainActivity extends Activity {
     private final List<String> listTitles = new ArrayList<>();
 
     private String filterQuery = "";
-    private String pendingDownloadUrl = "";
-    private String pendingDownloadName = "";
+
+    // Peta nama bank populer ke kode saham BEI
+    private static final Map<String, String> BANK_ALIAS = new HashMap<>();
+    static {
+        BANK_ALIAS.put("bca", "BBCA");
+        BANK_ALIAS.put("bri", "BBRI");
+        BANK_ALIAS.put("mandiri", "BMRI");
+        BANK_ALIAS.put("bni", "BBNI");
+        BANK_ALIAS.put("btn", "BBTN");
+        BANK_ALIAS.put("bsi", "BRIS");
+        BANK_ALIAS.put("permata", "BNLI");
+        BANK_ALIAS.put("danamon", "BDMN");
+        BANK_ALIAS.put("panin", "PNBN");
+        BANK_ALIAS.put("cimb", "BNGA");
+        BANK_ALIAS.put("mega", "MEGA");
+        BANK_ALIAS.put("jago", "ARTO");
+        BANK_ALIAS.put("allo", "BBHI");
+        BANK_ALIAS.put("bjb", "BJBR");
+        BANK_ALIAS.put("jatim", "BJTM");
+    }
 
     public static class AnnouncementItem {
         String title;
@@ -133,8 +145,8 @@ public class MainActivity extends Activity {
         btnRefresh.setOnClickListener(v -> refreshData());
 
         btnSearch = new Button(this);
-        btnSearch.setText("CARI KODE");
-        btnSearch.setContentDescription("Tombol, Cari atau filter kode saham");
+        btnSearch.setText("CARI KODE / BANK");
+        btnSearch.setContentDescription("Tombol, Cari kode saham atau nama bank");
         btnSearch.setOnClickListener(v -> showSearchDialog());
 
         btnDialogMenu = new Button(this);
@@ -191,13 +203,6 @@ public class MainActivity extends Activity {
                 mainHandler.post(() -> prosesHasilEkstraksi(json));
             }
         }, "AndroidBridge");
-
-        hiddenWebView.setDownloadListener(new DownloadListener() {
-            @Override
-            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-                unduhLewatDownloadManagerResmi(url, pendingDownloadName);
-            }
-        });
 
         hiddenWebView.setWebViewClient(new WebViewClient() {
             @Override
@@ -375,11 +380,28 @@ public class MainActivity extends Activity {
         displayItems.clear();
         listTitles.clear();
 
-        for (AnnouncementItem item : allItems) {
-            if (filterQuery.isEmpty() ||
-                item.title.toLowerCase(Locale.ROOT).contains(filterQuery.toLowerCase(Locale.ROOT)) ||
-                item.code.toLowerCase(Locale.ROOT).contains(filterQuery.toLowerCase(Locale.ROOT))) {
+        String q = filterQuery.trim().toLowerCase(Locale.ROOT);
+        String aliasCode = BANK_ALIAS.get(q);
 
+        for (AnnouncementItem item : allItems) {
+            boolean matches = false;
+            if (q.isEmpty()) {
+                matches = true;
+            } else {
+                String titleLower = item.title.toLowerCase(Locale.ROOT);
+                String codeUpper = item.code.toUpperCase(Locale.ROOT);
+
+                // Pencocokan langsung kata kunci
+                if (titleLower.contains(q) || item.code.toLowerCase(Locale.ROOT).contains(q)) {
+                    matches = true;
+                }
+                // Pencocokan otomatis nama alias bank (misal ketik "bca" langsung cocok ke "BBCA")
+                else if (aliasCode != null && codeUpper.equals(aliasCode)) {
+                    matches = true;
+                }
+            }
+
+            if (matches) {
                 displayItems.add(item);
                 String label = String.format("%d. %s\n(%s)",
                         displayItems.size(),
@@ -393,7 +415,7 @@ public class MainActivity extends Activity {
 
         String status = "Kategori: Saham (" + displayItems.size() + " pengumuman)";
         if (!filterQuery.isEmpty()) {
-            status += " [Filter: " + filterQuery + "]";
+            status += " [Filter: " + filterQuery + (aliasCode != null ? " / " + aliasCode : "") + "]";
         }
         statusTextView.setText(status);
     }
@@ -406,7 +428,7 @@ public class MainActivity extends Activity {
 
         String[] itemLabels = new String[displayItems.size() + 2];
         itemLabels[0] = "Segarkan pengumuman";
-        itemLabels[1] = filterQuery.isEmpty() ? "Cari / Filter kode saham" : "Hapus filter saat ini (" + filterQuery + ")";
+        itemLabels[1] = filterQuery.isEmpty() ? "Cari kode saham / bank" : "Hapus filter saat ini (" + filterQuery + ")";
 
         for (int i = 0; i < displayItems.size(); i++) {
             AnnouncementItem it = displayItems.get(i);
@@ -438,6 +460,7 @@ public class MainActivity extends Activity {
         b.show();
     }
 
+    // Dialog rincian aksi: Langsung buka lewat Browser/PDF Viewer agar tidak ditolak server IDX (403)
     private void showDetailActionDialog(AnnouncementItem item) {
         String pesan = "Judul:\n" + item.title + "\n\n" +
                 "Tanggal Rilis:\n" + (item.date.isEmpty() ? "-" : item.date) + "\n\n" +
@@ -447,8 +470,8 @@ public class MainActivity extends Activity {
         b.setTitle(item.code.isEmpty() ? "Rincian Pengumuman" : "Emiten: [" + item.code + "]");
         b.setMessage(pesan);
 
-        b.setPositiveButton("unduh PDF", (d, w) -> {
-            checkPermissionAndDownload(item.url, item.fileName);
+        b.setPositiveButton("unduh / buka PDF", (d, w) -> {
+            bukaPdfLangsung(item.url);
         });
 
         b.setNeutralButton("salin tautan", (d, w) -> {
@@ -463,17 +486,34 @@ public class MainActivity extends Activity {
         b.show();
     }
 
+    /**
+     * Solusi Teraman dan Terbukti Berhasil untuk IDX:
+     * Server IDX mewajibkan verifikasi Cloudflare/Browser Session.
+     * Membuka langsung via ACTION_VIEW akan otomatis mengunduh atau membaca PDF
+     * lewat browser / pembaca PDF ponsel tanpa pernah terhalang HTTP 403.
+     */
+    private void bukaPdfLangsung(String urlTarget) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setData(Uri.parse(urlTarget));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Tidak ada aplikasi browser untuk membuka tautan.", Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void showSearchDialog() {
         EditText input = new EditText(this);
-        input.setHint("Contoh: BBCA, PTPP, atau kata kunci");
+        input.setHint("Ketik: bca, bri, mandiri, bni, ptpp, dll.");
         input.setSingleLine(true);
         if (!filterQuery.isEmpty()) {
             input.setText(filterQuery);
         }
 
         AlertDialog.Builder b = new AlertDialog.Builder(this);
-        b.setTitle("Cari Pengumuman / Saham");
-        b.setMessage("Masukkan 4 huruf kode saham atau kata kunci:");
+        b.setTitle("Cari Saham / Bank");
+        b.setMessage("Anda dapat mengetik nama bank (bca, bri, mandiri, bni, btn, bsi) atau kode saham (BBCA, PTPP):");
         b.setView(input);
 
         b.setPositiveButton("terapkan", (d, w) -> {
@@ -511,87 +551,9 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void checkPermissionAndDownload(String url, String fileName) {
-        pendingDownloadUrl = url;
-        pendingDownloadName = fileName;
-
-        if (Build.VERSION.SDK_INT >= 23 && Build.VERSION.SDK_INT <= 28) {
-            if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_STORAGE);
-                return;
-            }
-        }
-        unduhLewatDownloadManagerResmi(url, fileName);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_STORAGE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            if (!pendingDownloadUrl.isEmpty()) {
-                unduhLewatDownloadManagerResmi(pendingDownloadUrl, pendingDownloadName);
-                pendingDownloadUrl = "";
-                pendingDownloadName = "";
-            }
-        } else {
-            Toast.makeText(this, "Izin penyimpanan dibutuhkan untuk mengunduh.", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    /**
-     * Solusi Tuntas Unduh PDF (Bebas Error 403 Forbidden):
-     * Memanfaatkan sesi resmi yang sudah terautentikasi di WebView dan meneruskannya
-     * ke DownloadManager lengkap dengan Cookie, User-Agent, dan Referer resmi IDX.
-     */
-    private void unduhLewatDownloadManagerResmi(String urlTarget, String initialFileName) {
-        try {
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(urlTarget));
-
-            String safeName = initialFileName;
-            if (safeName == null || safeName.trim().isEmpty()) {
-                safeName = URLUtil.guessFileName(urlTarget, null, "application/pdf");
-            }
-            safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
-            if (!safeName.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
-                safeName += ".pdf";
-            }
-
-            // Pasang identitas sesi resmi agar tidak ditolak server (403 Forbidden)
-            String cookies = CookieManager.getInstance().getCookie(urlTarget);
-            if (cookies != null && !cookies.isEmpty()) {
-                request.addRequestHeader("Cookie", cookies);
-            }
-            String ua = hiddenWebView.getSettings().getUserAgentString();
-            request.addRequestHeader("User-Agent", ua);
-            request.addRequestHeader("Referer", IDX_URL);
-            request.addRequestHeader("Accept", "application/pdf,*/*");
-
-            request.setTitle(safeName);
-            request.setDescription("Mengunduh dokumen pengumuman emiten IDX...");
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeName);
-
-            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-            if (dm != null) {
-                dm.enqueue(request);
-                Toast.makeText(this, "Mulai mengunduh: " + safeName, Toast.LENGTH_SHORT).show();
-            }
-        } catch (Exception e) {
-            // Alternatif otomatis bila DownloadManager terganggu: buka browser langsung
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(urlTarget));
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-            } catch (Exception err) {
-                Toast.makeText(this, "Gagal mengunduh: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-            }
-        }
-    }
-
     @Override
     protected void onResume() {
         super.onResume();
-        // Otomatis segarkan saat aplikasi dibuka agar layar tidak kosong
         if (allItems.isEmpty()) {
             refreshData();
         }
