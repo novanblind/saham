@@ -590,8 +590,8 @@ public class MainActivity extends Activity {
                         conn.setRequestProperty("User-Agent", finalUserAgent);
                         conn.setRequestProperty("Referer", IDX_URL);
                         conn.setRequestProperty("Accept", "application/pdf,*/*");
-                        if (cookie != null && !cookie.isEmpty()) {
-                            conn.setRequestProperty("Cookie", cookie);
+                        if (finalCookie != null && !finalCookie.isEmpty()) {
+                            conn.setRequestProperty("Cookie", finalCookie);
                         }
                         conn.setConnectTimeout(25000);
                         conn.setReadTimeout(45000);
