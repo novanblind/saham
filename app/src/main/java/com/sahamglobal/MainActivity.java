@@ -69,13 +69,13 @@ public class MainActivity extends Activity {
         topBar.addView(statusText);
         root.addView(topBar);
 
-        // Indikator proses pemuatan
+        // Indikator proses pemuatan halaman
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setMax(100);
         progressBar.setVisibility(View.GONE);
         root.addView(progressBar);
 
-        // WebView untuk membuka keterbukaan informasi
+        // WebView penampil keterbukaan informasi
         webView = new WebView(this);
         LinearLayout.LayoutParams webParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
@@ -101,7 +101,7 @@ public class MainActivity extends Activity {
         settings.setDisplayZoomControls(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
-        // Selalu muat data terkini tanpa cache usang
+        // Muat data langsung tanpa cache agar selalu segar
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
         // 1. Penanganan unduh otomatis saat tombol/lampiran PDF ditekan
@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 progressBar.setVisibility(View.VISIBLE);
-                statusText.setText("Memuat data keterbukaan informasi...");
+                statusText.setText("Memuat data saham terbaru...");
             }
 
             @Override
@@ -126,7 +126,7 @@ public class MainActivity extends Activity {
                 progressBar.setVisibility(View.GONE);
                 statusText.setText("Halaman berhasil diperbarui");
 
-                // Injeksi skrip khusus aksesibilitas pembaca layar dan otomatis memilih Saham
+                // Injeksi otomatis: pilih 'Saham' dan rapikan antarmuka untuk pembaca layar
                 terapkanOptimasiAksesibilitasDanPilihSaham(view);
             }
 
@@ -167,69 +167,131 @@ public class MainActivity extends Activity {
 
     /**
      * Skrip JavaScript untuk:
-     * 1. Menghilangkan elemen pengganggu agar pembaca layar nyaman saat navigasi usap.
-     * 2. Otomatis mencentang / memilih opsi 'Saham' pada filter jenis instrumen.
+     * 1. Menghilangkan elemen visual pengganggu (header, breadcrumb, tombol WA melayang).
+     * 2. Otomatis membuka filter jenis dan memilih 'Saham'.
      */
     private void terapkanOptimasiAksesibilitasDanPilihSaham(WebView view) {
         String js = "javascript:(function() {" +
-                "  function bersihkanTampilan() {" +
-                "    /* Sembunyikan header situs, menu navigasi atas, footer, tombol melayang WhatsApp, dan breadcrumb */" +
-                "    var elemenHapus = document.querySelectorAll(" +
-                "      'header, footer, nav, .header-wrapper, .navbar, .banner, .breadcrumb, ' +" +
-                "      '[class*=\"floating\"], [class*=\"whatsapp\"], [class*=\"chat\"], [id*=\"chat\"], ' +" +
-                "      '.v-tour, .help-widget, iframe[src*=\"whatsapp\"]'" +
-                "    );" +
-                "    for (var i = 0; i < elemenHapus.length; i++) {" +
-                "      elemenHapus[i].style.setProperty('display', 'none', 'important');" +
-                "    }" +
-                "  }" +
+                "  /* 1. Pasang aturan CSS agar elemen pengganggu langsung lenyap permanen */" +
+                "  var css = 'header, footer, nav, .navbar, .header-wrapper, .banner, ' +" +
+                "            '.breadcrumb, ol.breadcrumb, ul.breadcrumb, [aria-label=\"breadcrumb\"], ' +" +
+                "            '[class*=\"floating\"], [class*=\"whatsapp\"], [class*=\"chat\"], ' +" +
+                "            'button[class*=\"chat\"], iframe[src*=\"whatsapp\"], .v-tour, .help-widget ' +" +
+                "            '{ display: none !important; }';" +
+                "  var style = document.createElement('style');" +
+                "  style.type = 'text/css';" +
+                "  style.appendChild(document.createTextNode(css));" +
+                "  document.head.appendChild(style);" +
                 "" +
-                "  function otomatisPilihSaham() {" +
-                "    /* 1. Periksa elemen select bawaan */" +
-                "    var selects = document.querySelectorAll('select');" +
-                "    selects.forEach(function(sel) {" +
-                "      for (var j = 0; j < sel.options.length; j++) {" +
-                "        var optText = sel.options[j].text.trim().toLowerCase();" +
-                "        if (optText === 'saham') {" +
-                "          if (sel.selectedIndex !== j) {" +
-                "            sel.selectedIndex = j;" +
-                "            sel.dispatchEvent(new Event('change', { bubbles: true }));" +
-                "          }" +
+                "  var telahDipilih = false;" +
+                "  var hitungBuka = 0;" +
+                "" +
+                "  function bersihkanTeksBreadcrumb() {" +
+                "    document.querySelectorAll('div, p, span').forEach(function(el) {" +
+                "      if (el.children.length <= 2 && el.innerText &&" +
+                "          el.innerText.indexOf('Perusahaan Tercatat') !== -1 &&" +
+                "          el.innerText.indexOf('Keterbukaan Informasi') !== -1 &&" +
+                "          el.tagName !== 'H1' && el.tagName !== 'H2') {" +
+                "        if (el.innerText.indexOf('>') !== -1 || el.innerText.indexOf('/') !== -1) {" +
+                "          el.style.setProperty('display', 'none', 'important');" +
                 "        }" +
                 "      }" +
                 "    });" +
+                "  }" +
                 "" +
-                "    /* 2. Periksa dropdown kustom (Vue/Nuxt) */" +
-                "    var pemicu = document.querySelectorAll('button, div, span, input');" +
-                "    for (var k = 0; k < pemicu.length; k++) {" +
-                "      var txt = (pemicu[k].innerText || pemicu[k].value || '').trim();" +
+                "  function triggerKlik(el) {" +
+                "    if (!el) return;" +
+                "    ['mouseenter', 'mousedown', 'mouseup', 'click'].forEach(function(evt) {" +
+                "      try {" +
+                "        var e = new MouseEvent(evt, { bubbles: true, cancelable: true, view: window });" +
+                "        el.dispatchEvent(e);" +
+                "      } catch(err) {}" +
+                "    });" +
+                "    try { if (typeof el.click === 'function') el.click(); } catch(err) {}" +
+                "  }" +
+                "" +
+                "  function jalankanPilihanSaham() {" +
+                "    if (telahDipilih) return;" +
+                "" +
+                "    /* A. Periksa tag select bawaan */" +
+                "    document.querySelectorAll('select').forEach(function(sel) {" +
+                "      for (var k = 0; k < sel.options.length; k++) {" +
+                "        if (sel.options[k].text.trim().toLowerCase() === 'saham') {" +
+                "          if (sel.selectedIndex !== k) {" +
+                "            sel.selectedIndex = k;" +
+                "            sel.dispatchEvent(new Event('change', { bubbles: true }));" +
+                "          }" +
+                "          telahDipilih = true;" +
+                "          return;" +
+                "        }" +
+                "      }" +
+                "    });" +
+                "    if (telahDipilih) return;" +
+                "" +
+                "    /* B. Cek apakah menu dropdown sedang terbuka dan menampilkan opsi 'Saham' */" +
+                "    var opsiSaham = null;" +
+                "    var kandidat = document.querySelectorAll('li, div[role=\"option\"], a, span, button, p');" +
+                "    for (var j = 0; j < kandidat.length; j++) {" +
+                "      var item = kandidat[j];" +
+                "      var isi = (item.innerText || item.textContent || '').trim();" +
+                "      if (isi === 'Saham') {" +
+                "        if (item.tagName === 'LI' ||" +
+                "            item.getAttribute('role') === 'option' ||" +
+                "            item.closest('ul, .dropdown-menu, .multiselect__content, .v-select__content, [class*=\"dropdown\"], [class*=\"menu\"], [class*=\"select\"], [class*=\"list\"]')) {" +
+                "          opsiSaham = item;" +
+                "          break;" +
+                "        }" +
+                "      }" +
+                "    }" +
+                "" +
+                "    if (opsiSaham) {" +
+                "      triggerKlik(opsiSaham);" +
+                "      telahDipilih = true;" +
+                "      return;" +
+                "    }" +
+                "" +
+                "    /* C. Jika opsi belum terlihat, cari tombol pemicu dropdown 'Jenis - Semua' */" +
+                "    var kotakJenis = null;" +
+                "    var semuaElem = document.querySelectorAll('button, div, span, input, a');" +
+                "    for (var i = 0; i < semuaElem.length; i++) {" +
+                "      var txt = (semuaElem[i].innerText || semuaElem[i].value || '').trim();" +
                 "      if (txt === 'Jenis - Semua') {" +
-                "        pemicu[k].click();" +
+                "        kotakJenis = semuaElem[i];" +
                 "        break;" +
                 "      }" +
                 "    }" +
                 "" +
-                "    /* Cari opsi pilihan 'Saham' pada daftar dropdown dan klik */" +
-                "    var daftarOpsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
-                "    for (var m = 0; m < daftarOpsi.length; m++) {" +
-                "      var namaOpsi = (daftarOpsi[m].innerText || daftarOpsi[m].textContent || '').trim();" +
-                "      if (namaOpsi === 'Saham' && daftarOpsi[m].offsetParent !== null) {" +
-                "        daftarOpsi[m].click();" +
-                "        break;" +
+                "    if (kotakJenis) {" +
+                "      /* Klik buka secara berkala dan beri jeda agar dropdown tidak langsung tertutup kembali */" +
+                "      if (hitungBuka % 2 === 0) {" +
+                "        var targetKlik = kotakJenis.closest('button, [role=\"button\"], .multiselect, .v-select, .dropdown-toggle') || kotakJenis;" +
+                "        triggerKlik(targetKlik);" +
+                "      }" +
+                "      hitungBuka++;" +
+                "    } else {" +
+                "      /* Cek apakah tombol jenis sudah berubah menjadi 'Saham' */" +
+                "      for (var m = 0; m < semuaElem.length; m++) {" +
+                "        var t = (semuaElem[m].innerText || semuaElem[m].value || '').trim();" +
+                "        if (t === 'Saham' && (semuaElem[m].closest('.multiselect, .v-select, .dropdown') || semuaElem[m].getAttribute('role') === 'button')) {" +
+                "          telahDipilih = true;" +
+                "          return;" +
+                "        }" +
                 "      }" +
                 "    }" +
                 "  }" +
                 "" +
-                "  /* Jalankan berkala selama beberapa detik karena IDX memuat filter secara dinamis */" +
-                "  bersihkanTampilan();" +
-                "  otomatisPilihSaham();" +
-                "  var coba = 0;" +
-                "  var pengulang = setInterval(function() {" +
-                "    coba++;" +
-                "    bersihkanTampilan();" +
-                "    otomatisPilihSaham();" +
-                "    if (coba >= 8) clearInterval(pengulang);" +
-                "  }, 500);" +
+                "  bersihkanTeksBreadcrumb();" +
+                "  jalankanPilihanSaham();" +
+                "" +
+                "  var putaran = 0;" +
+                "  var timer = setInterval(function() {" +
+                "    putaran++;" +
+                "    bersihkanTeksBreadcrumb();" +
+                "    jalankanPilihanSaham();" +
+                "    if (telahDipilih || putaran > 30) {" +
+                "      clearInterval(timer);" +
+                "    }" +
+                "  }, 400);" +
                 "})()";
 
         view.loadUrl(js);
