@@ -3,15 +3,13 @@ package com.sahamglobal;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.ProgressDialog;
+import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.media.MediaScannerConnection;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
@@ -24,6 +22,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
 import android.webkit.WebSettings;
@@ -41,11 +40,6 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -198,6 +192,13 @@ public class MainActivity extends Activity {
             }
         }, "AndroidBridge");
 
+        hiddenWebView.setDownloadListener(new DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
+                unduhLewatDownloadManagerResmi(url, pendingDownloadName);
+            }
+        });
+
         hiddenWebView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
@@ -287,7 +288,7 @@ public class MainActivity extends Activity {
                 "    putaran++;" +
                 "    aktifkanDropdownSaham();" +
                 "    ambilDaftar();" +
-                "    if (putaran >= 8) clearInterval(timer);" +
+                "    if (putaran >= 15) clearInterval(timer);" +
                 "  }, 800);" +
                 "})()";
 
@@ -366,7 +367,7 @@ public class MainActivity extends Activity {
             loadingBar.setVisibility(View.GONE);
             applyFilter();
 
-            Toast.makeText(this, "Berhasil memuat " + allItems.size() + " pengumuman saham.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Memuat " + allItems.size() + " pengumuman saham.", Toast.LENGTH_SHORT).show();
         } catch (Exception ignored) {}
     }
 
@@ -511,15 +512,16 @@ public class MainActivity extends Activity {
     }
 
     private void checkPermissionAndDownload(String url, String fileName) {
+        pendingDownloadUrl = url;
+        pendingDownloadName = fileName;
+
         if (Build.VERSION.SDK_INT >= 23 && Build.VERSION.SDK_INT <= 28) {
             if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                pendingDownloadUrl = url;
-                pendingDownloadName = fileName;
                 requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_STORAGE);
                 return;
             }
         }
-        downloadFileWithInternalEngine(url, fileName);
+        unduhLewatDownloadManagerResmi(url, fileName);
     }
 
     @Override
@@ -527,7 +529,7 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_STORAGE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             if (!pendingDownloadUrl.isEmpty()) {
-                downloadFileWithInternalEngine(pendingDownloadUrl, pendingDownloadName);
+                unduhLewatDownloadManagerResmi(pendingDownloadUrl, pendingDownloadName);
                 pendingDownloadUrl = "";
                 pendingDownloadName = "";
             }
@@ -537,170 +539,62 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Pengunduh Internal Mandiri (Background Thread):
-     * Membaca userAgent dan cookie terlebih dahulu di UI thread sebelum masuk ke thread latar belakang.
+     * Solusi Tuntas Unduh PDF (Bebas Error 403 Forbidden):
+     * Memanfaatkan sesi resmi yang sudah terautentikasi di WebView dan meneruskannya
+     * ke DownloadManager lengkap dengan Cookie, User-Agent, dan Referer resmi IDX.
      */
-    private void downloadFileWithInternalEngine(String urlTarget, String initialFileName) {
-        ProgressDialog progress = new ProgressDialog(this);
-        progress.setTitle("Mengunduh Berkas Laporan");
-        progress.setMessage("Menghubungkan ke server pengunduhan...");
-        progress.setCancelable(false);
-        progress.show();
-
-        // Ambil User-Agent & Cookie di Main Thread untuk mencegah error WebView threading
-        String tempUa = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+    private void unduhLewatDownloadManagerResmi(String urlTarget, String initialFileName) {
         try {
-            if (hiddenWebView != null && hiddenWebView.getSettings() != null) {
-                tempUa = hiddenWebView.getSettings().getUserAgentString();
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(urlTarget));
+
+            String safeName = initialFileName;
+            if (safeName == null || safeName.trim().isEmpty()) {
+                safeName = URLUtil.guessFileName(urlTarget, null, "application/pdf");
             }
-        } catch (Exception ignored) {}
-        final String finalUserAgent = tempUa;
-
-        String tempCookie = "";
-        try {
-            tempCookie = CookieManager.getInstance().getCookie(urlTarget);
-        } catch (Exception ignored) {}
-        final String finalCookie = tempCookie;
-
-        new Thread(() -> {
-            try {
-                URL url = new URL(urlTarget);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setRequestProperty("User-Agent", finalUserAgent);
-                conn.setRequestProperty("Referer", IDX_URL);
-                conn.setRequestProperty("Accept", "application/pdf,*/*");
-                if (finalCookie != null && !finalCookie.isEmpty()) {
-                    conn.setRequestProperty("Cookie", finalCookie);
-                }
-                conn.setConnectTimeout(25000);
-                conn.setReadTimeout(45000);
-
-                int respCode = conn.getResponseCode();
-                if (respCode == HttpURLConnection.HTTP_MOVED_PERM || 
-                    respCode == HttpURLConnection.HTTP_MOVED_TEMP || 
-                    respCode == 307) {
-                    String redirectUrl = conn.getHeaderField("Location");
-                    conn.disconnect();
-
-                    if (redirectUrl != null) {
-                        url = new URL(redirectUrl);
-                        conn = (HttpURLConnection) url.openConnection();
-                        conn.setRequestMethod("GET");
-                        conn.setRequestProperty("User-Agent", finalUserAgent);
-                        conn.setRequestProperty("Referer", IDX_URL);
-                        conn.setRequestProperty("Accept", "application/pdf,*/*");
-                        if (finalCookie != null && !finalCookie.isEmpty()) {
-                            conn.setRequestProperty("Cookie", finalCookie);
-                        }
-                        conn.setConnectTimeout(25000);
-                        conn.setReadTimeout(45000);
-                        respCode = conn.getResponseCode();
-                    }
-                }
-
-                if (respCode < 200 || respCode >= 300) {
-                    throw new Exception("Server IDX menolak permintaan dengan kode HTTP: " + respCode);
-                }
-
-                String safeName = initialFileName;
-                if (safeName == null || safeName.trim().isEmpty()) {
-                    safeName = URLUtil.guessFileName(urlTarget, null, "application/pdf");
-                }
-                safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
-                if (!safeName.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
-                    safeName += ".pdf";
-                }
-
-                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                if (!downloadDir.exists()) {
-                    downloadDir.mkdirs();
-                }
-
-                File targetFile = new File(downloadDir, safeName);
-                InputStream is = conn.getInputStream();
-                FileOutputStream fos = new FileOutputStream(targetFile);
-
-                byte[] buffer = new byte[8192];
-                int bytesRead;
-                while ((bytesRead = is.read(buffer)) != -1) {
-                    fos.write(buffer, 0, bytesRead);
-                }
-
-                fos.flush();
-                fos.close();
-                is.close();
-                conn.disconnect();
-
-                MediaScannerConnection.scanFile(this, new String[]{targetFile.getAbsolutePath()}, null, null);
-
-                String finalPath = targetFile.getAbsolutePath();
-                String finalName = safeName;
-
-                mainHandler.post(() -> {
-                    pcallDismiss(progress);
-                    showDownloadSuccessDialog(finalName, finalPath);
-                });
-
-            } catch (Exception e) {
-                mainHandler.post(() -> {
-                    pcallDismiss(progress);
-                    showDownloadErrorDialog(e.getMessage(), urlTarget);
-                });
+            safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+            if (!safeName.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+                safeName += ".pdf";
             }
-        }).start();
-    }
 
-    private void showDownloadSuccessDialog(String fileName, String filePath) {
-        AlertDialog.Builder b = new AlertDialog.Builder(this);
-        b.setTitle("Unduhan Selesai");
-        b.setMessage("Berkas PDF berhasil diunduh dan tersimpan di folder Download:\n\n" + fileName);
-
-        b.setPositiveButton("buka PDF", (d, w) -> {
-            try {
-                Intent intent = new Intent(Intent.ACTION_VIEW);
-                Uri uri = Uri.fromFile(new File(filePath));
-                intent.setDataAndType(uri, "application/pdf");
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(intent);
-            } catch (Exception err) {
-                Toast.makeText(this, "Berkas ada di folder Download ponsel Anda.", Toast.LENGTH_LONG).show();
+            // Pasang identitas sesi resmi agar tidak ditolak server (403 Forbidden)
+            String cookies = CookieManager.getInstance().getCookie(urlTarget);
+            if (cookies != null && !cookies.isEmpty()) {
+                request.addRequestHeader("Cookie", cookies);
             }
-        });
+            String ua = hiddenWebView.getSettings().getUserAgentString();
+            request.addRequestHeader("User-Agent", ua);
+            request.addRequestHeader("Referer", IDX_URL);
+            request.addRequestHeader("Accept", "application/pdf,*/*");
 
-        b.setNegativeButton("tutup", null);
-        b.show();
-    }
+            request.setTitle(safeName);
+            request.setDescription("Mengunduh dokumen pengumuman emiten IDX...");
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeName);
 
-    private void showDownloadErrorDialog(String errMessage, String urlTarget) {
-        AlertDialog.Builder b = new AlertDialog.Builder(this);
-        b.setTitle("Gagal Mengunduh");
-        b.setMessage("Kesalahan: " + errMessage);
-
-        b.setPositiveButton("salin tautan", (d, w) -> {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            if (cm != null) {
-                cm.setPrimaryClip(ClipData.newPlainText("Tautan Unduhan", urlTarget));
-                Toast.makeText(this, "Tautan berhasil disalin.", Toast.LENGTH_SHORT).show();
+            DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) {
+                dm.enqueue(request);
+                Toast.makeText(this, "Mulai mengunduh: " + safeName, Toast.LENGTH_SHORT).show();
             }
-        });
-
-        b.setNeutralButton("buka di browser", (d, w) -> {
+        } catch (Exception e) {
+            // Alternatif otomatis bila DownloadManager terganggu: buka browser langsung
             try {
                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(urlTarget));
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
-            } catch (Exception ignored) {}
-        });
-
-        b.setNegativeButton("tutup", null);
-        b.show();
+            } catch (Exception err) {
+                Toast.makeText(this, "Gagal mengunduh: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
-    private void pcallDismiss(ProgressDialog p) {
-        try {
-            if (p != null && p.isShowing()) p.dismiss();
-        } catch (Exception ignored) {}
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Otomatis segarkan saat aplikasi dibuka agar layar tidak kosong
+        if (allItems.isEmpty()) {
+            refreshData();
+        }
     }
 
     @Override
