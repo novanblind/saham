@@ -294,14 +294,9 @@ public class MainActivity extends Activity {
         view.loadUrl(js);
     }
 
-    /**
-     * Filter ketat khusus kategori Saham:
-     * Menyaring dan membuang instrumen non-saham (ETF, Reksa Dana, Obligasi, Sukuk, EBA, DIRE).
-     */
     private boolean isKategoriSahamMurni(AnnouncementItem item) {
         String t = (item.title + " " + item.fileName).toLowerCase(Locale.ROOT);
 
-        // 1. Buang laporan harian Nilai Aktiva Bersih (NAB) / ETF / Reksa Dana
         if (t.contains("nilai aktiva bersih") ||
             t.contains("komposisi portofolio") ||
             t.contains("laporan harian nab") ||
@@ -311,7 +306,6 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 2. Buang laporan instrumen Obligasi & Sukuk
         if (t.contains("obligasi") ||
             t.contains("sukuk") ||
             t.contains("surat utang") ||
@@ -321,7 +315,6 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 3. Buang instrumen EBA & DIRE / DINFRA
         if (t.contains("efek beragun") ||
             t.contains("eba") ||
             t.contains("dire ") ||
@@ -329,7 +322,6 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // 4. Buang kode ticker ETF (Di BEI semua ETF diawali huruf 'X', misal XDIF, XDES, XIJI, dll) atau 'R-'
         if (item.code != null && !item.code.isEmpty()) {
             String c = item.code.toUpperCase(Locale.ROOT);
             if (c.startsWith("X") && c.length() == 4) {
@@ -361,9 +353,7 @@ public class MainActivity extends Activity {
                 if (!u.isEmpty()) {
                     AnnouncementItem item = new AnnouncementItem(t, d, f, u);
 
-                    // Hanya masukkan jika benar-benar instrumen SAHAM MURNI
                     if (isKategoriSahamMurni(item)) {
-                        // Hilangkan duplikasi pengumuman ganda (judul dan tanggal sama)
                         String postKey = item.title.trim().toLowerCase(Locale.ROOT) + "|" + item.date.trim();
                         if (!seenPost.contains(postKey)) {
                             seenPost.add(postKey);
@@ -407,7 +397,6 @@ public class MainActivity extends Activity {
         statusTextView.setText(status);
     }
 
-    // Menu dialog bergaya Pengelola GitHub
     private void showAnnouncementDialogMenu() {
         if (displayItems.isEmpty()) {
             Toast.makeText(this, "Daftar pengumuman saham kosong.", Toast.LENGTH_SHORT).show();
@@ -448,7 +437,6 @@ public class MainActivity extends Activity {
         b.show();
     }
 
-    // Dialog rincian aksi saat salah satu pengumuman dipilih
     private void showDetailActionDialog(AnnouncementItem item) {
         String pesan = "Judul:\n" + item.title + "\n\n" +
                 "Tanggal Rilis:\n" + (item.date.isEmpty() ? "-" : item.date) + "\n\n" +
@@ -549,9 +537,8 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Pengunduh Internal Kuat (Background Thread):
-     * Menyertakan Header Browser Asli (Referer, User-Agent, Cookie) & mengikuti redirect
-     * sehingga TIDAK AKAN DITOLAK (403 Forbidden) oleh server Bursa Efek Indonesia.
+     * Pengunduh Internal Mandiri (Background Thread):
+     * Membaca userAgent dan cookie terlebih dahulu di UI thread sebelum masuk ke thread latar belakang.
      */
     private void downloadFileWithInternalEngine(String urlTarget, String initialFileName) {
         ProgressDialog progress = new ProgressDialog(this);
@@ -560,16 +547,22 @@ public class MainActivity extends Activity {
         progress.setCancelable(false);
         progress.show();
 
+        // Ambil User-Agent & Cookie di Main Thread untuk mencegah error WebView threading
+        String userAgent;
+        try {
+            userAgent = hiddenWebView.getSettings().getUserAgentString();
+        } catch (Exception e) {
+            userAgent = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+        }
+        String cookie = CookieManager.getInstance().getCookie(urlTarget);
+
         new Thread(() -> {
             try {
-                String userAgent = hiddenWebView.getSettings().getUserAgentString();
-                String cookie = CookieManager.getInstance().getCookie(urlTarget);
-
                 URL url = new URL(urlTarget);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 conn.setRequestProperty("User-Agent", userAgent);
-                conn.setRequestProperty("Referer", IDX_URL); // WAJIB untuk melewati proteksi IDX
+                conn.setRequestProperty("Referer", IDX_URL);
                 conn.setRequestProperty("Accept", "application/pdf,*/*");
                 if (cookie != null && !cookie.isEmpty()) {
                     conn.setRequestProperty("Cookie", cookie);
@@ -578,7 +571,6 @@ public class MainActivity extends Activity {
                 conn.setReadTimeout(45000);
 
                 int respCode = conn.getResponseCode();
-                // Tangani pengalihan (301, 302, 307)
                 if (respCode == HttpURLConnection.HTTP_MOVED_PERM || 
                     respCode == HttpURLConnection.HTTP_MOVED_TEMP || 
                     respCode == 307) {
@@ -605,12 +597,10 @@ public class MainActivity extends Activity {
                     throw new Exception("Server IDX menolak permintaan dengan kode HTTP: " + respCode);
                 }
 
-                // Tentukan nama berkas yang aman dan valid
                 String safeName = initialFileName;
                 if (safeName == null || safeName.trim().isEmpty()) {
                     safeName = URLUtil.guessFileName(urlTarget, null, "application/pdf");
                 }
-                // Bersihkan karakter terlarang pada nama berkas
                 safeName = safeName.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
                 if (!safeName.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
                     safeName += ".pdf";
@@ -636,7 +626,6 @@ public class MainActivity extends Activity {
                 is.close();
                 conn.disconnect();
 
-                // Daftarkan ke sistem agar langsung terdeteksi di galeri/file manager
                 MediaScannerConnection.scanFile(this, new String[]{targetFile.getAbsolutePath()}, null, null);
 
                 String finalPath = targetFile.getAbsolutePath();
