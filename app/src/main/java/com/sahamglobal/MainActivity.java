@@ -1,6 +1,5 @@
 package com.sahamglobal;
 
-import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
@@ -60,8 +59,9 @@ public class MainActivity extends Activity {
     private final List<String> listTitles = new ArrayList<>();
 
     private String filterQuery = "";
+    private boolean isInitialLoaded = false;
 
-    // Peta nama bank populer ke kode saham BEI
+    // Peta pencarian nama bank populer ke kode saham Bursa Efek Indonesia
     private static final Map<String, String> BANK_ALIAS = new HashMap<>();
     static {
         BANK_ALIAS.put("bca", "BBCA");
@@ -111,12 +111,12 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Tata letak utama antarmuka native (Aksesibel untuk pembaca layar)
+        // Tata letak antarmuka native murni (Sangat cepat dan ramah pembaca layar)
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(16, 16, 16, 16);
 
-        // Baris status koneksi & pemuatan
+        // Baris status
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
         statusRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -134,7 +134,7 @@ public class MainActivity extends Activity {
 
         root.addView(statusRow);
 
-        // Baris tombol aksi cepat
+        // Baris tombol kontrol atas
         LinearLayout buttonRow = new LinearLayout(this);
         buttonRow.setOrientation(LinearLayout.HORIZONTAL);
         buttonRow.setPadding(0, 8, 0, 12);
@@ -161,7 +161,7 @@ public class MainActivity extends Activity {
 
         root.addView(buttonRow);
 
-        // Tampilan daftar pengumuman saham
+        // Tampilan daftar pengumuman saham (Native ListView)
         announcementListView = new ListView(this);
         announcementListView.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
@@ -215,42 +215,20 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                statusTextView.setText("Memilih kategori Saham & menganalisis...");
-                injeksiEkstraktorPengumuman(view);
+                statusTextView.setText("Menganalisis pengumuman saham...");
+                // Jalankan ekstraksi sekali saja tanpa perulangan interval
+                injeksiEkstraktorPengumumanSatuKali(view);
             }
         });
     }
 
-    private void injeksiEkstraktorPengumuman(WebView view) {
+    /**
+     * Skrip ekstraksi: Dijalankan 1 KALI SAJA tanpa setInterval berulang-ulang
+     * sehingga pembaca layar tenang dan tidak berulang kali bicara.
+     */
+    private void injeksiEkstraktorPengumumanSatuKali(WebView view) {
         String js = "javascript:(function() {" +
-                "  /* 1. Otomatis pilih jenis 'Saham' pada dropdown situs */" +
-                "  function aktifkanDropdownSaham() {" +
-                "    var elemen = document.querySelectorAll('button, div, span, input, a');" +
-                "    for (var k = 0; k < elemen.length; k++) {" +
-                "      var txt = (elemen[k].innerText || elemen[k].value || '').trim();" +
-                "      if (txt === 'Jenis - Semua') {" +
-                "        var btn = elemen[k].closest('button, [role=\"button\"], .multiselect, .v-select') || elemen[k];" +
-                "        try { btn.click(); } catch(e){}" +
-                "        setTimeout(function() {" +
-                "          var opsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
-                "          for (var m = 0; m < opsi.length; m++) {" +
-                "            var namaOpsi = (opsi[m].innerText || opsi[m].textContent || '').trim();" +
-                "            if (namaOpsi === 'Saham') {" +
-                "              try {" +
-                "                opsi[m].click();" +
-                "                opsi[m].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));" +
-                "              } catch(e){}" +
-                "              break;" +
-                "            }" +
-                "          }" +
-                "        }, 350);" +
-                "        break;" +
-                "      }" +
-                "    }" +
-                "  }" +
-                "" +
-                "  /* 2. Ekstraksi daftar pengumuman */" +
-                "  function ambilDaftar() {" +
+                "  function ambilDaftarSekali() {" +
                 "    var hasil = [];" +
                 "    var pdfLinks = document.querySelectorAll('a[href*=\".pdf\"], a[href*=\"lamp\"]');" +
                 "    var seenUrl = {};" +
@@ -287,14 +265,32 @@ public class MainActivity extends Activity {
                 "    }" +
                 "  }" +
                 "" +
-                "  aktifkanDropdownSaham();" +
-                "  var putaran = 0;" +
-                "  var timer = setInterval(function() {" +
-                "    putaran++;" +
-                "    aktifkanDropdownSaham();" +
-                "    ambilDaftar();" +
-                "    if (putaran >= 15) clearInterval(timer);" +
-                "  }, 800);" +
+                "  /* Buka dropdown dan pilih Saham 1 kali dengan jeda halus */" +
+                "  setTimeout(function() {" +
+                "    var elemen = document.querySelectorAll('button, div, span, input, a');" +
+                "    for (var k = 0; k < elemen.length; k++) {" +
+                "      var txt = (elemen[k].innerText || elemen[k].value || '').trim();" +
+                "      if (txt === 'Jenis - Semua') {" +
+                "        var btn = elemen[k].closest('button, [role=\"button\"], .multiselect, .v-select') || elemen[k];" +
+                "        try { btn.click(); } catch(e){}" +
+                "        break;" +
+                "      }" +
+                "    }" +
+                "    setTimeout(function() {" +
+                "      var opsi = document.querySelectorAll('li, div[role=\"option\"], a, span, button');" +
+                "      for (var m = 0; m < opsi.length; m++) {" +
+                "        var namaOpsi = (opsi[m].innerText || opsi[m].textContent || '').trim();" +
+                "        if (namaOpsi === 'Saham') {" +
+                "          try {" +
+                "            opsi[m].click();" +
+                "            opsi[m].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));" +
+                "          } catch(e){}" +
+                "          break;" +
+                "        }" +
+                "      }" +
+                "      ambilDaftarSekali();" +
+                "    }, 400);" +
+                "  }, 600);" +
                 "})()";
 
         view.loadUrl(js);
@@ -372,7 +368,7 @@ public class MainActivity extends Activity {
             loadingBar.setVisibility(View.GONE);
             applyFilter();
 
-            Toast.makeText(this, "Memuat " + allItems.size() + " pengumuman saham.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Berhasil memuat " + allItems.size() + " pengumuman saham.", Toast.LENGTH_SHORT).show();
         } catch (Exception ignored) {}
     }
 
@@ -391,12 +387,9 @@ public class MainActivity extends Activity {
                 String titleLower = item.title.toLowerCase(Locale.ROOT);
                 String codeUpper = item.code.toUpperCase(Locale.ROOT);
 
-                // Pencocokan langsung kata kunci
                 if (titleLower.contains(q) || item.code.toLowerCase(Locale.ROOT).contains(q)) {
                     matches = true;
-                }
-                // Pencocokan otomatis nama alias bank (misal ketik "bca" langsung cocok ke "BBCA")
-                else if (aliasCode != null && codeUpper.equals(aliasCode)) {
+                } else if (aliasCode != null && codeUpper.equals(aliasCode)) {
                     matches = true;
                 }
             }
@@ -460,7 +453,6 @@ public class MainActivity extends Activity {
         b.show();
     }
 
-    // Dialog rincian aksi: Langsung buka lewat Browser/PDF Viewer agar tidak ditolak server IDX (403)
     private void showDetailActionDialog(AnnouncementItem item) {
         String pesan = "Judul:\n" + item.title + "\n\n" +
                 "Tanggal Rilis:\n" + (item.date.isEmpty() ? "-" : item.date) + "\n\n" +
@@ -470,7 +462,7 @@ public class MainActivity extends Activity {
         b.setTitle(item.code.isEmpty() ? "Rincian Pengumuman" : "Emiten: [" + item.code + "]");
         b.setMessage(pesan);
 
-        b.setPositiveButton("unduh / buka PDF", (d, w) -> {
+        b.setPositiveButton("buka / unduh PDF", (d, w) -> {
             bukaPdfLangsung(item.url);
         });
 
@@ -486,12 +478,6 @@ public class MainActivity extends Activity {
         b.show();
     }
 
-    /**
-     * Solusi Teraman dan Terbukti Berhasil untuk IDX:
-     * Server IDX mewajibkan verifikasi Cloudflare/Browser Session.
-     * Membuka langsung via ACTION_VIEW akan otomatis mengunduh atau membaca PDF
-     * lewat browser / pembaca PDF ponsel tanpa pernah terhalang HTTP 403.
-     */
     private void bukaPdfLangsung(String urlTarget) {
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW);
@@ -513,13 +499,17 @@ public class MainActivity extends Activity {
 
         AlertDialog.Builder b = new AlertDialog.Builder(this);
         b.setTitle("Cari Saham / Bank");
-        b.setMessage("Anda dapat mengetik nama bank (bca, bri, mandiri, bni, btn, bsi) atau kode saham (BBCA, PTPP):");
+        b.setMessage("Ketik nama bank (bca, bri, mandiri, bni) atau kode saham (BBCA, PTPP):");
         b.setView(input);
 
         b.setPositiveButton("terapkan", (d, w) -> {
             filterQuery = input.getText().toString().trim();
             applyFilter();
-            Toast.makeText(this, "Menampilkan " + displayItems.size() + " hasil.", Toast.LENGTH_SHORT).show();
+            if (displayItems.isEmpty()) {
+                Toast.makeText(this, "Tidak ada pengumuman untuk '" + filterQuery + "' di daftar terbaru saat ini.", Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, "Ditemukan " + displayItems.size() + " pengumuman.", Toast.LENGTH_SHORT).show();
+            }
         });
 
         b.setNeutralButton("reset filter", (d, w) -> {
@@ -554,7 +544,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (allItems.isEmpty()) {
+        if (!isInitialLoaded) {
+            isInitialLoaded = true;
             refreshData();
         }
     }
